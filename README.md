@@ -1,2 +1,12 @@
 # geminiproxy
 一键gemini反代安装脚本
+
+基于Ubuntu Debian CentOS ArchLinux发行linux
+
+使用nginx反代需要预先准备好ssl证书
+
+安装完成后将域名解析至你主机的公网ip
+
+注意这里不是将gemini标准格式转换成openai格式注意甄别
+
+将您的域名填入chatbox等ai聊天软件内即可
