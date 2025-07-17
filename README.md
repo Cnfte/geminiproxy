@@ -10,3 +10,8 @@
 注意这里不是将gemini标准格式转换成openai格式注意甄别
 
 将您的域名填入chatbox等ai聊天软件内即可
+
+安装命令：
+```shell
+wget 
+```
