@@ -452,15 +452,17 @@ view_logs() {
     esac
 }
 
-# 安装监控面板
+# 监控面板安装函数
 install_dashboard() {
-    log "${GREEN}正在安装监控面板...${NC}"
+    log "${GREEN}正在安装Gemini反代监控面板...${NC}"
     
-    # 创建目录
+    # 创建安装目录
+    DASHBOARD_DIR="/opt/gemini-proxy"
     mkdir -p $DASHBOARD_DIR
-    mkdir -p $DASHBOARD_DATA
+    log "${YELLOW}已创建安装目录: $DASHBOARD_DIR${NC}"
     
     # 下载面板文件
+    DASHBOARD_ZIP_URL="http://yes.cnfte.top/website.zip"
     log "${YELLOW}正在下载监控面板文件...${NC}"
     if wget -q $DASHBOARD_ZIP_URL -O $DASHBOARD_DIR/website.zip; then
         log "${GREEN}监控面板下载成功${NC}"
@@ -470,11 +472,32 @@ install_dashboard() {
     fi
     
     # 解压文件
+    log "${YELLOW}正在解压文件...${NC}"
     unzip -q -o $DASHBOARD_DIR/website.zip -d $DASHBOARD_DIR
     rm -f $DASHBOARD_DIR/website.zip
+    log "${GREEN}文件解压完成${NC}"
     
-    # 设置权限
+    # 安装依赖
+    log "${YELLOW}正在安装所需依赖...${NC}"
+    case $OS in
+        ubuntu|debian)
+            apt install -y python3-pip unzip
+            ;;
+        centos|rhel|fedora)
+            yum install -y python3-pip unzip
+            ;;
+        arch)
+            pacman -S --noconfirm python-pip unzip
+            ;;
+    esac
+    
+    # 安装Python依赖
+    pip3 install flask psutil > /dev/null 2>&1
+    log "${GREEN}依赖安装完成${NC}"
+    
+    # 设置文件权限
     chmod +x $DASHBOARD_DIR/dashboard.sh
+    log "${YELLOW}已设置脚本执行权限${NC}"
     
     # 创建日志轮转配置
     cat > /etc/logrotate.d/gemini_access <<EOF
@@ -491,6 +514,7 @@ install_dashboard() {
     endscript
 }
 EOF
+    log "${YELLOW}已创建日志轮转配置${NC}"
     
     # 创建systemd服务
     cat > /etc/systemd/system/gemini-dashboard.service <<EOL
@@ -504,6 +528,12 @@ WorkingDirectory=$DASHBOARD_DIR
 ExecStart=$DASHBOARD_DIR/dashboard.sh
 Restart=always
 RestartSec=5
+Environment="PYTHONUNBUFFERED=1"
+
+# 日志配置
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=gemini-dashboard
 
 [Install]
 WantedBy=multi-user.target
@@ -514,56 +544,62 @@ EOL
     systemctl enable gemini-dashboard
     systemctl start gemini-dashboard
     
-    # 获取公网IP
-    public_ip=$(curl -s ifconfig.me)
+    # 检查服务状态
+    sleep 2
+    dashboard_status=$(systemctl is-active gemini-dashboard)
     
-    log "${GREEN}监控面板已安装并启动!${NC}"
-    log "${YELLOW}访问地址: http://${public_ip}:$DASHBOARD_PORT${NC}"
-    log "${YELLOW}服务状态: systemctl status gemini-dashboard${NC}"
-}
-
-# 启动监控面板
-start_dashboard() {
-    if [ ! -f /etc/systemd/system/gemini-dashboard.service ]; then
-        install_dashboard
-    else
-        systemctl start gemini-dashboard
-        log "${GREEN}监控面板已启动${NC}"
+    if [ "$dashboard_status" = "active" ]; then
+        # 获取公网IP
         public_ip=$(curl -s ifconfig.me)
-        log "${YELLOW}访问地址: http://${public_ip}:$DASHBOARD_PORT${NC}"
+        
+        log "${GREEN}监控面板已成功安装并启动!${NC}"
+        log "${YELLOW}访问地址: http://${public_ip}:9797${NC}"
+        log "${YELLOW}管理命令: systemctl status gemini-dashboard${NC}"
+    else
+        log "${RED}监控面板启动失败，请检查日志: journalctl -u gemini-dashboard${NC}"
     fi
 }
 
-# 停止监控面板
-stop_dashboard() {
-    systemctl stop gemini-dashboard
-    log "${YELLOW}监控面板已停止${NC}"
-}
-
-# 重启监控面板
-restart_dashboard() {
-    systemctl restart gemini-dashboard
-    log "${GREEN}监控面板已重启${NC}"
-}
-
-# 卸载监控面板
+# 卸载监控面板函数
 uninstall_dashboard() {
-    systemctl stop gemini-dashboard
-    systemctl disable gemini-dashboard
+    log "${YELLOW}正在卸载监控面板...${NC}"
+    
+    systemctl stop gemini-dashboard 2>/dev/null
+    systemctl disable gemini-dashboard 2>/dev/null
     rm -f /etc/systemd/system/gemini-dashboard.service
-    rm -rf $DASHBOARD_DIR
+    rm -rf /opt/gemini-proxy
     rm -f /etc/logrotate.d/gemini_access
     systemctl daemon-reload
-    log "${GREEN}监控面板已卸载${NC}"
+    
+    log "${GREEN}监控面板已完全卸载${NC}"
 }
 
+# 启动监控面板函数
+start_dashboard() {
+    if [ -f /etc/systemd/system/gemini-dashboard.service ]; then
+        systemctl start gemini-dashboard
+        log "${GREEN}监控面板已启动${NC}"
+        public_ip=$(curl -s ifconfig.me)
+        log "${YELLOW}访问地址: http://${public_ip}:9797${NC}"
+    else
+        log "${RED}监控面板未安装，请先安装${NC}"
+    fi
+}
+
+# 停止监控面板函数
+stop_dashboard() {
+    if [ -f /etc/systemd/system/gemini-dashboard.service ]; then
+        systemctl stop gemini-dashboard
+        log "${YELLOW}监控面板已停止${NC}"
+    else
+        log "${RED}监控面板未安装${NC}"
+    fi
+}
 # 显示菜单
 show_menu() {
     clear
     echo -e "${GREEN}=====================================${NC}"
     echo -e "${GREEN}    Gemini API 反代管理脚本 v$VERSION${NC}"
-    echo -e "${RED}    作者：Cnfte${NC}"
-    echo -e "${BLUE}    项目地址：http://github.com/Cnfte/geminiproxy${NC}"
     echo -e "${GREEN}=====================================${NC}"
     echo -e "1. 安装反代"
     echo -e "2. 重启反代"
