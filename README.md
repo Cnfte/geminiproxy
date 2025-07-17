@@ -13,5 +13,12 @@
 
 安装命令：
 ```shell
-wget 
+wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh
+```
+```shell
+sudo bash proxy.sh
+```
+或：
+```shell
+wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh && sudo bash proxy.sh
 ```
