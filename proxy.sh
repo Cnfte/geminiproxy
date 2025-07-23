@@ -77,7 +77,6 @@ configure_firewall() {
             if command -v ufw &> /dev/null; then
                 ufw allow 80/tcp
                 ufw allow 443/tcp
-                ufw --force enable
             fi
             ;;
         centos|rhel|fedora)
