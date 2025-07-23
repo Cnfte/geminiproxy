@@ -9,7 +9,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 版本信息
-VERSION="1.2.0"
+VERSION="1.1.0"
 CONFIG_FILE="/etc/gemini_proxy.conf"
 BACKUP_DIR="/var/backups/gemini_proxy"
 LOG_FILE="/var/log/gemini_proxy.log"
@@ -54,16 +54,14 @@ install_dependencies() {
     case $OS in
         ubuntu|debian)
             apt update
-            apt install -y nginx openssl curl certbot ufw jq bc
+            apt install -y nginx openssl curl jq bc
             ;;
         centos|rhel|fedora)
             yum install -y epel-release
-            yum install -y nginx openssl curl certbot firewalld jq bc
-            systemctl enable firewalld
-            systemctl start firewalld
+            yum install -y nginx openssl curl jq bc
             ;;
         arch)
-            pacman -Sy --noconfirm nginx openssl curl certbot jq bc
+            pacman -Sy --noconfirm nginx openssl curl jq bc
             ;;
         *)
             log "${RED}不支持的操作系统: $OS${NC}"
@@ -76,76 +74,62 @@ install_dependencies() {
 configure_firewall() {
     case $OS in
         ubuntu|debian)
-            ufw allow 80/tcp
-            ufw allow 443/tcp
-            ufw --force enable
+            if command -v ufw &> /dev/null; then
+                ufw allow 80/tcp
+                ufw allow 443/tcp
+                ufw --force enable
+            fi
             ;;
         centos|rhel|fedora)
-            firewall-cmd --permanent --add-service=http
-            firewall-cmd --permanent --add-service=https
-            firewall-cmd --reload
+            if command -v firewall-cmd &> /dev/null; then
+                systemctl enable --now firewalld
+                firewall-cmd --permanent --add-service=http
+                firewall-cmd --permanent --add-service=https
+                firewall-cmd --reload
+            fi
             ;;
         arch)
-            iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-            iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-            iptables-save > /etc/iptables/iptables.rules
-            systemctl enable iptables
+            if command -v iptables &> /dev/null; then
+                iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+                iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+                iptables-save > /etc/iptables/iptables.rules
+                systemctl enable iptables
+            fi
             ;;
     esac
     log "${GREEN}防火墙已配置${NC}"
 }
 
-# 申请SSL证书
-request_ssl_cert() {
-    read -p "请输入您的域名: " domain
-    read -p "请输入邮箱地址(用于证书过期提醒): " email
-    
-    # 停止Nginx以释放80端口
-    systemctl stop nginx
-    
-    # 申请证书
-    certbot certonly --standalone --non-interactive --agree-tos -d $domain -m $email
-    
-    if [ $? -eq 0 ]; then
-        cert_path="/etc/letsencrypt/live/$domain/fullchain.pem"
-        key_path="/etc/letsencrypt/live/$domain/privkey.pem"
-        
-        # 保存配置
-        echo "DOMAIN=$domain" > $CONFIG_FILE
-        echo "CERT_PATH=$cert_path" >> $CONFIG_FILE
-        echo "KEY_PATH=$key_path" >> $CONFIG_FILE
-        
-        log "${GREEN}SSL证书申请成功${NC}"
-    else
-        log "${RED}SSL证书申请失败${NC}"
-        exit 1
-    fi
-    
-    # 重启Nginx
-    systemctl start nginx
-}
-
 # 配置Nginx
 configure_nginx() {
-    if [ ! -f $CONFIG_FILE ]; then
-        request_ssl_cert
+    read -p "请输入您的域名: " domain
+    read -p "请输入SSL证书路径(全路径).pem格式: " cert_path
+    read -p "请输入SSL证书密钥路径(全路径).key格式: " key_path
+
+    # 验证证书文件是否存在
+    if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+        log "${RED}证书文件不存在，请检查路径${NC}"
+        return 1
     fi
-    
-    source $CONFIG_FILE
-    
+
+    # 保存配置
+    echo "DOMAIN=$domain" > $CONFIG_FILE
+    echo "CERT_PATH=$cert_path" >> $CONFIG_FILE
+    echo "KEY_PATH=$key_path" >> $CONFIG_FILE
+
     # 创建配置文件
     cat > /etc/nginx/conf.d/chat.conf <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $domain;
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name $DOMAIN;
-    ssl_certificate $CERT_PATH;
-    ssl_certificate_key $KEY_PATH;
+    server_name $domain;
+    ssl_certificate $cert_path;
+    ssl_certificate_key $key_path;
     ssl_session_cache shared:le_nginx_SSL:1m;
     ssl_session_timeout 1440m;
     ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
@@ -167,10 +151,6 @@ server {
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
-    
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
 }
 EOF
 
@@ -178,9 +158,10 @@ EOF
     nginx -t
     if [ $? -eq 0 ]; then
         log "${GREEN}Nginx配置测试成功${NC}"
+        return 0
     else
         log "${RED}Nginx配置测试失败，请检查配置${NC}"
-        exit 1
+        return 1
     fi
 }
 
@@ -213,19 +194,19 @@ uninstall_nginx() {
     
     case $OS in
         ubuntu|debian)
-            apt remove --purge -y nginx certbot
+            apt remove --purge -y nginx
             apt autoremove -y
             ;;
         centos|rhel|fedora)
-            yum remove -y nginx certbot
+            yum remove -y nginx
             ;;
         arch)
-            pacman -R --noconfirm nginx certbot
+            pacman -R --noconfirm nginx
             ;;
     esac
     
     rm -f /etc/nginx/conf.d/chat.conf
-    log "${GREEN}Nginx和Certbot已卸载${NC}"
+    log "${GREEN}Nginx已卸载${NC}"
 }
 
 # 完全删除所有相关文件和配置
@@ -234,16 +215,21 @@ full_remove() {
     rm -rf /etc/nginx
     rm -rf /var/log/nginx
     rm -rf /var/cache/nginx
-    rm -rf /etc/letsencrypt
     rm -f $CONFIG_FILE
+    rm -rf $BACKUP_DIR
     log "${GREEN}所有Nginx相关文件和配置已删除${NC}"
 }
 
 # 备份配置
 backup_config() {
+    if [ ! -f $CONFIG_FILE ]; then
+        log "${RED}未找到配置文件，请先安装反代${NC}"
+        return
+    fi
+    
     mkdir -p $BACKUP_DIR
     TIMESTAMP=$(date +%Y%m%d%H%M%S)
-    tar -czf "$BACKUP_DIR/gemini_proxy_$TIMESTAMP.tar.gz" /etc/nginx/conf.d/chat.conf $CONFIG_FILE /etc/letsencrypt/live/$DOMAIN 2>/dev/null
+    tar -czf "$BACKUP_DIR/gemini_proxy_$TIMESTAMP.tar.gz" /etc/nginx/conf.d/chat.conf $CONFIG_FILE 2>/dev/null
     log "${GREEN}配置已备份到 $BACKUP_DIR/gemini_proxy_$TIMESTAMP.tar.gz${NC}"
 }
 
@@ -251,6 +237,11 @@ backup_config() {
 restore_config() {
     echo "可用的备份文件:"
     ls -l $BACKUP_DIR/*.tar.gz 2>/dev/null | awk '{print $9}'
+    
+    if [ -z "$(ls -A $BACKUP_DIR/*.tar.gz 2>/dev/null)" ]; then
+        log "${RED}没有找到备份文件${NC}"
+        return
+    fi
     
     read -p "请输入要恢复的备份文件路径: " backup_file
     
@@ -266,11 +257,9 @@ restore_config() {
 # 检查服务状态
 check_status() {
     nginx_status=$(systemctl is-active nginx)
-    certbot_status=$(systemctl is-active certbot 2>/dev/null || echo "inactive")
     
     echo -e "${CYAN}=== 服务状态 ===${NC}"
     echo -e "Nginx: $nginx_status"
-    echo -e "Certbot: $certbot_status"
     
     if [ -f $CONFIG_FILE ]; then
         source $CONFIG_FILE
@@ -280,22 +269,24 @@ check_status() {
         echo -e "密钥路径: $KEY_PATH"
         
         # 检查证书过期时间
-        cert_expiry=$(openssl x509 -enddate -noout -in $CERT_PATH | cut -d= -f2)
-        echo -e "证书过期时间: $cert_expiry"
+        if [ -f "$CERT_PATH" ]; then
+            cert_expiry=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+            if [ -n "$cert_expiry" ]; then
+                echo -e "证书过期时间: $cert_expiry"
+            else
+                echo -e "证书过期时间: ${RED}无法获取${NC}"
+            fi
+        else
+            echo -e "证书过期时间: ${RED}证书文件不存在${NC}"
+        fi
     fi
     
     # 显示最近访问日志
     echo -e "\n${CYAN}=== 最近访问日志 (最后5行) ===${NC}"
-    tail -n 5 /var/log/nginx/gemini_access.log 2>/dev/null || echo "无访问日志"
-}
-
-# 更新证书
-renew_cert() {
-    if [ -f $CONFIG_FILE ]; then
-        certbot renew --quiet --post-hook "systemctl reload nginx"
-        log "${GREEN}SSL证书已更新${NC}"
+    if [ -f /var/log/nginx/gemini_access.log ]; then
+        tail -n 5 /var/log/nginx/gemini_access.log
     else
-        log "${RED}未找到配置文件，无法更新证书${NC}"
+        echo "无访问日志"
     fi
 }
 
@@ -312,10 +303,14 @@ monitor_proxy() {
     trap 'log "${CYAN}监控已停止${NC}"; return' INT
     
     while true; do
-        response=$(curl -s -o /dev/null -w "%{http_code}" "https://$DOMAIN/v1/models" -H "Content-Type: application/json")
+        response=$(curl -s -o /dev/null -w "%{http_code}" "https://$DOMAIN/v1/models" -H "Content-Type: application/json" --connect-timeout 5)
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         
-        if [ "$response" -eq 200 ]; then
+        if [ -z "$response" ]; then
+            response="无响应"
+        fi
+        
+        if [ "$response" -eq 200 ] 2>/dev/null; then
             echo -e "[$timestamp] ${GREEN}代理正常 (HTTP $response)${NC}"
         else
             echo -e "[$timestamp] ${RED}代理异常 (HTTP $response)${NC}"
@@ -335,18 +330,25 @@ view_logs() {
     read -p "请输入选项 [1-4]: " log_choice
     
     case $log_choice in
-        1) tail -f /var/log/nginx/gemini_access.log ;;
-        2) tail -f /var/log/nginx/gemini_error.log ;;
-        3) tail -f $LOG_FILE ;;
-        4) 
+        1) 
             echo -e "${CYAN}=== Nginx访问日志 ===${NC}"
-            tail -n 10 /var/log/nginx/gemini_access.log
-            echo -e "\n${CYAN}=== Nginx错误日志 ===${NC}"
-            tail -n 10 /var/log/nginx/gemini_error.log
-            echo -e "\n${CYAN}=== 脚本日志 ===${NC}"
-            tail -n 10 $LOG_FILE
+            tail -f /var/log/nginx/gemini_access.log 
             ;;
-        *) log "${RED}无效选项${NC}" ;;
+        2) 
+            echo -e "${CYAN}=== Nginx错误日志 ===${NC}"
+            tail -f /var/log/nginx/gemini_error.log 
+            ;;
+        3) 
+            echo -e "${CYAN}=== 脚本日志 ===${NC}"
+            tail -f $LOG_FILE 
+            ;;
+        4) 
+            echo -e "${CYAN}=== 全部日志 (按Ctrl+C停止) ===${NC}"
+            multitail -s 3 /var/log/nginx/gemini_access.log /var/log/nginx/gemini_error.log $LOG_FILE
+            ;;
+        *) 
+            log "${RED}无效选项${NC}" 
+            ;;
     esac
 }
 
@@ -355,8 +357,10 @@ show_menu() {
     clear
     echo -e "${GREEN}=====================================${NC}"
     echo -e "${GREEN}    Gemini API 反代管理脚本 v$VERSION${NC}"
+    echo -e "${YELLOW}    欢迎您的使用，作者cnfte${NC}"
+    echo -e "${RED}    开源地址：https://github.com/cnfte/geminiproxy${NC}"
     echo -e "${GREEN}=====================================${NC}"
-    echo -e "1. 安装反代 (自动申请SSL证书)"
+    echo -e "1. 安装反代"
     echo -e "2. 重启反代"
     echo -e "3. 卸载反代"
     echo -e "4. 停止Nginx程序"
@@ -364,12 +368,11 @@ show_menu() {
     echo -e "6. 备份当前配置"
     echo -e "7. 恢复配置"
     echo -e "8. 检查服务状态"
-    echo -e "9. 更新SSL证书"
-    echo -e "10. 监控代理状态"
-    echo -e "11. 查看日志"
+    echo -e "9. 监控代理状态"
+    echo -e "10. 查看日志"
     echo -e "0. 退出"
     echo -e "${GREEN}=====================================${NC}"
-    read -p "请输入选项 [0-11]: " option
+    read -p "请输入选项 [0-10]: " option
 }
 
 # 主函数
@@ -387,8 +390,9 @@ main() {
             1)
                 install_dependencies
                 configure_firewall
-                configure_nginx
-                start_nginx
+                if configure_nginx; then
+                    start_nginx
+                fi
                 ;;
             2)
                 restart_nginx
@@ -412,12 +416,9 @@ main() {
                 check_status
                 ;;
             9)
-                renew_cert
-                ;;
-            10)
                 monitor_proxy
                 ;;
-            11)
+            10)
                 view_logs
                 ;;
             0)
