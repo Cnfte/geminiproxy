@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Gemini API 反向代理管理脚本 (v2.1.0)
+# Gemini API 反向代理管理脚本 (v2.1.1)
 # 作者: cnfte (整合与优化: Gemini Assistant)
 # 开源地址: https://github.com/cnfte/geminiproxy (原版)
 # 功能:
@@ -26,7 +26,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # --- 版本信息 ---
-VERSION="2.1.0"
+VERSION="2.1.1" # 修复了 apt update 错误
 CONFIG_FILE="/etc/gemini_proxy.conf"
 BACKUP_DIR="/var/backups/gemini_proxy"
 LOG_FILE="/var/log/gemini_proxy.log"
@@ -86,7 +86,14 @@ install_dependencies() {
     
     case $OS in
         ubuntu|debian)
-            install_cmd="apt update && apt install -y"
+            # 确保 apt update 独立运行
+            log "${CYAN}正在运行 apt update...${NC}"
+            if ! apt update; then
+                log "${RED}apt update 失败，请检查您的 APT 配置和网络连接。${NC}"
+                return 1
+            fi
+            
+            install_cmd="apt install -y"
             packages="nginx openssl curl jq bc certbot python3-certbot-nginx multitail"
             ;;
         centos|rhel|fedora)
@@ -115,6 +122,7 @@ install_dependencies() {
             ;;
     esac
     
+    log "${CYAN}正在执行安装命令: $install_cmd $packages${NC}"
     if ! $install_cmd $packages; then
         log "${RED}基础依赖安装失败，请检查错误信息。${NC}"
         return 1
@@ -196,7 +204,7 @@ configure_firewall() {
 # --- 获取 Certbot 的 SSL Session Cache 大小 ---
 get_certbot_ssl_cache_size() {
     if [ -f "$CERTBOT_OPTIONS_FILE" ]; then
-        local size=$(grep "ssl_session_cache" "$CERTBOT_OPTIONS_FILE" | awk '{print $4}' | sed 's/;//')
+        local size=$(grep "ssl_session_cache" "$CERTBOT_OPTIONS_FILE" 2>/dev/null | awk '{print $4}' | sed 's/;//')
         if [ -n "$size" ]; then
             echo "$size"
         else
@@ -253,9 +261,100 @@ configure_nginx_proxy() {
             echo "KEY_PATH=$key_path" >> $CONFIG_FILE
             echo "PROXY_TARGET=https://generativelanguage.googleapis.com/" >> $CONFIG_FILE
             
-            # 重新加载 Nginx 配置以应用 Certbot 的更改和我们的反代配置
+            # Certbot 成功后，它会修改 Nginx 配置并尝试重载。
+            # 我们需要确保我们的反代 location 块被添加到 Certbot 生成的配置中。
+            # Certbot 通常会在 /etc/nginx/sites-available/default 或 /etc/nginx/conf.d/your_domain.conf 中添加配置。
+            # 最稳妥的方式是，在 Certbot 成功后，将我们的 location 块插入到 Certbot 生成的 server 块中。
+            # 考虑到 Certbot 可能会覆盖或修改文件，这里采取一种更直接的方式：
+            # 检查 Certbot 是否已为该域名创建了配置文件，并尝试修改它。
+            
+            local certbot_conf_path="/etc/nginx/conf.d/$domain.conf"
+            if [ ! -f "$certbot_conf_path" ]; then
+                # Certbot 可能修改了 default 或其他文件，尝试查找
+                certbot_conf_path=$(find /etc/nginx/sites-available /etc/nginx/conf.d -name "*.conf" -print0 | xargs -0 grep -l "server_name $domain" 2>/dev/null | head -n 1)
+            fi
+
+            if [ -n "$certbot_conf_path" ] && [ -f "$certbot_conf_path" ]; then
+                log "${GREEN}找到 Certbot 生成的 Nginx 配置文件: $certbot_conf_path${NC}"
+                # 备份原始文件
+                cp "$certbot_conf_path" "${certbot_conf_path}.bak_$(date +%Y%m%d%H%M%S)"
+                
+                # 插入 proxy_pass 配置到 Certbot 生成的 server 块中
+                # 寻找 listen 443 ssl; 后的第一个 location / { ... } 块，或者直接在 server 块末尾插入
+                # 这是一个简化的插入逻辑，可能需要根据 Certbot 实际生成的配置进行调整
+                sed -i '/listen 443 ssl/a\
+    \
+    access_log /var/log/nginx/gemini_access.log;\
+    error_log /var/log/nginx/gemini_error.log;\
+    \
+    location / {\
+        proxy_pass  https://generativelanguage.googleapis.com/;\
+        proxy_ssl_server_name on;\
+        proxy_set_header Host generativelanguage.googleapis.com;\
+        proxy_set_header Connection "";\
+        proxy_http_version 1.1;\
+        chunked_transfer_encoding off;\
+        proxy_buffering off;\
+        proxy_cache off;\
+        proxy_set_header X-Forwarded-For \$remote_addr;\
+        proxy_set_header X-Forwarded-Proto \$scheme;\
+    }' "$certbot_conf_path"
+                
+                # 移除 Certbot 可能添加的默认 location 块，如果它与我们的冲突
+                # 例如：try_files $uri $uri/ =404;
+                sed -i '/try_files \$uri \$uri\/ =404;/d' "$certbot_conf_path"
+                log "${GREEN}已将反代配置插入到 Certbot 生成的 Nginx 配置文件中。${NC}"
+            else
+                log "${YELLOW}警告: 未能找到 Certbot 为 $domain 生成的 Nginx 配置文件。请手动将反代配置添加到您的 Nginx 配置中。${NC}"
+                # 如果找不到 Certbot 的文件，则生成一个独立的配置文件
+                local ssl_session_cache_size=$(get_certbot_ssl_cache_size)
+                cat > /etc/nginx/conf.d/gemini_proxy.conf <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $domain;
+    
+    ssl_certificate $cert_path;
+    ssl_certificate_key $key_path;
+    
+    ssl_session_cache shared:le_nginx_SSL:$ssl_session_cache_size;
+    ssl_session_timeout 1440m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_session_tickets off;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+    
+    access_log /var/log/nginx/gemini_access.log;
+    error_log /var/log/nginx/gemini_error.log;
+    
+    location / {
+        proxy_pass  https://generativelanguage.googleapis.com/;
+        proxy_ssl_server_name on;
+        proxy_set_header Host generativelanguage.googleapis.com;
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+            fi
+            
+            # 重新加载 Nginx 配置
             if ! nginx -t; then
-                log "${RED}Nginx 配置测试失败，Certbot 可能修改了配置导致冲突。请手动检查 Nginx 配置。${NC}"
+                log "${RED}Nginx 配置测试失败，请手动检查 Nginx 配置。${NC}"
                 return 1
             fi
             restart_nginx
@@ -263,7 +362,7 @@ configure_nginx_proxy() {
             log "${RED}SSL 证书申请失败，请检查错误信息。${NC}"
             return 1
         fi
-    else
+    else # 用户选择手动提供证书
         read -p "请输入 SSL 证书路径 (全路径, .pem 格式): " cert_path
         read -p "请输入 SSL 证书密钥路径 (全路径, .key 格式): " key_path
         
@@ -350,8 +449,8 @@ configure_nginx_monitor() {
     # 如果用户未设置 MONITOR_WEB_DOMAIN，则使用反代域名或 IP
     if [ -z "$MONITOR_WEB_DOMAIN" ] || [[ "$MONITOR_WEB_DOMAIN" == "monitor.your_domain.com" ]]; then
         if [ -n "$DOMAIN" ]; then
-            MONITOR_WEB_DOMAIN="$DOMAIN" # 尝试使用主域名的子域名
-            log "${YELLOW}未设置监控面板域名，将尝试使用主域名: $MONITOR_WEB_DOMAIN${NC}"
+            MONITOR_WEB_DOMAIN="monitor.$DOMAIN" # 尝试使用主域名的子域名
+            log "${YELLOW}未设置监控面板域名，将尝试使用主域名的子域名: $MONITOR_WEB_DOMAIN${NC}"
         else
             log "${RED}请在脚本中设置 MONITOR_WEB_DOMAIN 或先配置反代域名。${NC}"
             return 1
@@ -488,8 +587,8 @@ cat > "\$OUTPUT_DIR/index.html" <<EOF
         <h2>关键指标</h2>
         <table>
             <tr><th>指标</th><th>数值</th></tr>
-            <tr><td>请求总次数 (近7天)</td><td>$(cat $OUTPUT_DIR/total_requests.txt | awk '{print $3}')</td></tr>
-            <tr><td>请求成功率 (近7天)</td><td>$(cat $OUTPUT_DIR/success_rate.txt)</td></tr>
+            <tr><td>请求总次数 (近7天)</td><td>$(cat $OUTPUT_DIR/total_requests.txt 2>/dev/null | awk '{print $3}')</td></tr>
+            <tr><td>请求成功率 (近7天)</td><td>$(cat $OUTPUT_DIR/success_rate.txt 2>/dev/null)</td></tr>
         </table>
         
         <h2>近12小时请求 IP</h2>
@@ -521,11 +620,15 @@ EOF
     # 添加 cron 任务
     # 每天生成两次报告，例如凌晨 0 点和中午 12 点
     # 使用 crontab -e 可能会导致交互问题，直接修改 crontab 更可靠
-    if ! crontab -l 2>/dev/null | grep -q "$analyze_script"; then
-        (crontab -l 2>/dev/null; echo "0 0,12 * * * $analyze_script > /dev/null 2>&1") | crontab -
-        log "${GREEN}定时任务已设置。监控报告将生成在 $MONITOR_WEB_ROOT${NC}"
+    if command -v crontab &>/dev/null; then
+        if ! crontab -l 2>/dev/null | grep -q "$analyze_script"; then
+            (crontab -l 2>/dev/null; echo "0 0,12 * * * $analyze_script > /dev/null 2>&1") | crontab -
+            log "${GREEN}定时任务已设置。监控报告将生成在 $MONITOR_WEB_ROOT${NC}"
+        else
+            log "${YELLOW}定时任务已存在，未重复添加。${NC}"
+        fi
     else
-        log "${YELLOW}定时任务已存在，未重复添加。${NC}"
+        log "${RED}警告: crontab 命令不可用，无法设置定时任务。请手动设置。${NC}"
     fi
     return 0
 }
@@ -599,6 +702,26 @@ uninstall_nginx() {
     
     rm -f /etc/nginx/conf.d/gemini_proxy.conf
     rm -f "$NGINX_MONITOR_CONF"
+    # 尝试移除 Certbot 可能修改的配置文件中的反代部分
+    if [ -f "$CONFIG_FILE" ]; then
+        source $CONFIG_FILE
+        local certbot_conf_path="/etc/nginx/conf.d/$DOMAIN.conf"
+        if [ ! -f "$certbot_conf_path" ]; then
+            certbot_conf_path=$(find /etc/nginx/sites-available /etc/nginx/conf.d -name "*.conf" -print0 | xargs -0 grep -l "server_name $DOMAIN" 2>/dev/null | head -n 1)
+        fi
+        if [ -n "$certbot_conf_path" ] && [ -f "$certbot_conf_path" ]; then
+            log "${GREEN}尝试从 Certbot 配置文件 $certbot_conf_path 中移除反代配置。${NC}"
+            # 移除我们添加的 location 块和 access_log/error_log
+            sed -i '/location \/ {/,/}/d' "$certbot_conf_path"
+            sed -i '/access_log \/var\/log\/nginx\/gemini_access.log;/d' "$certbot_conf_path"
+            sed -i '/error_log \/var\/log\/nginx\/gemini_error.log;/d' "$certbot_conf_path"
+            # 恢复 Certbot 默认的 try_files，如果它被删除了
+            if ! grep -q "try_files \$uri \$uri/ =404;" "$certbot_conf_path"; then
+                sed -i '/listen 443 ssl/a\    try_files \$uri \$uri\/ =404;' "$certbot_conf_path"
+            fi
+            nginx -t && restart_nginx # 尝试测试并重启 Nginx
+        fi
+    fi
     log "${GREEN}Nginx 已卸载${NC}"
 }
 
@@ -640,6 +763,7 @@ backup_config() {
     
     mkdir -p $BACKUP_DIR
     TIMESTAMP=$(date +%Y%m%d%H%M%S)
+    # 备份主反代配置和脚本配置
     tar -czf "$BACKUP_DIR/gemini_proxy_config_$TIMESTAMP.tar.gz" /etc/nginx/conf.d/gemini_proxy.conf $CONFIG_FILE 2>/dev/null
     if [ $? -eq 0 ]; then
         log "${GREEN}配置已备份到 $BACKUP_DIR/gemini_proxy_config_$TIMESTAMP.tar.gz${NC}"
@@ -700,7 +824,7 @@ check_status() {
     
     # Certbot 续订定时器状态
     if command -v systemctl &> /dev/null && systemctl list-timers | grep -q certbot; then
-        certbot_timer_status=$(systemctl status certbot.timer | grep "Active:" | awk '{print $2}')
+        certbot_timer_status=$(systemctl status certbot.timer 2>/dev/null | grep "Active:" | awk '{print $2}')
         echo -e "Certbot 续订定时器: $certbot_timer_status"
     else
         echo -e "Certbot 续订定时器: 未找到或未启用"
@@ -919,8 +1043,8 @@ check_geo_blacklist() {
     # 检查是否已安装 jq
     if ! command -v jq &> /dev/null; then
         log "${YELLOW}警告: jq 未安装，无法进行精确的 IP 地理位置解析。请安装 jq (例如: sudo apt install jq)。${NC}"
-        # 尝试使用简单的 sed/grep，但可能不稳定
-        # return 0 # 暂时允许继续，但给出警告
+        # 如果 jq 不存在，则无法进行精确解析，直接返回成功，但给出警告
+        return 0
     fi
     
     # 检查是否已配置黑名单
@@ -944,8 +1068,9 @@ check_geo_blacklist() {
     if command -v jq &> /dev/null; then
         country=$(echo "$geo_info" | jq -r '.country')
     else
-        # 尝试简单的 sed/grep (不推荐，容易出错)
-        country=$(echo "$geo_info" | grep '"country":' | sed -e 's/"country": "\(.*\)",/\1/' -e 's/"//g')
+        # 如果 jq 不存在，这里无法可靠地解析 JSON，直接返回警告
+        log "${YELLOW}警告: jq 未安装，无法解析 IP 地理位置信息。${NC}"
+        return 0
     fi
 
     if [ -z "$country" ]; then
