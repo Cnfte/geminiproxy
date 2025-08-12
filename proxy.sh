@@ -246,8 +246,8 @@ server {
     ssl_certificate $cert_path;
     ssl_certificate_key $key_path;
     
-    # SSL 优化参数
-    ssl_session_cache shared:le_nginx_SSL:1m;
+    # SSL 优化参数 (由 Certbot 或其选项文件管理，避免重复声明)
+    # ssl_session_cache shared:le_nginx_SSL:1m; # <-- 移除此行
     ssl_session_timeout 1440m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
@@ -272,11 +272,6 @@ server {
         proxy_cache off;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # 黑名单地区访问控制 (在 Nginx 层面进行初步过滤)
-        # 需要一个模块或配置来实现，这里仅作示意，实际实现可能更复杂
-        # 例如，可以使用 geoip 模块，但需要额外安装和配置
-        # add_header X-GeoIP-Country \$geoip_country_code; # 示例
     }
 }
 EOF
