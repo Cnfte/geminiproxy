@@ -2,7 +2,7 @@
 # set -e # 在遇到错误时立即退出，提高脚本健壮性
 
 # ==============================================================================
-# Gemini API 反向代理管理脚本 (v2.2.0 - 强化安全与稳定性)
+# Gemini API 反向代理管理脚本 (v2.2.1 - 强化域名验证)
 # 作者: cnfte (整合与优化: Gemini Assistant)
 # 开源地址: https://github.com/cnfte/geminiproxy (原版)
 # 功能:
@@ -27,7 +27,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # --- 版本信息 ---
-VERSION="2.2.0" # 强化安全与稳定性
+VERSION="2.2.1" # 强化域名验证
 CONFIG_FILE="/etc/gemini_proxy.conf"
 BACKUP_DIR="/var/backups/gemini_proxy"
 LOG_FILE="/var/log/gemini_proxy.log"
@@ -83,12 +83,32 @@ detect_os() {
 # 验证域名格式
 validate_domain() {
     local domain_name="$1"
-    # 简单的域名格式验证，不允许空格和常见危险字符
-    if [[ "$domain_name" =~ ^[a-zA-Z0-9.-]+$ && ! "$domain_name" =~ [[:space:]] && ! "$domain_name" =~ [\/\\] ]]; then
-        return 0 # 有效
-    else
-        return 1 # 无效
+    # 1. 不能为空
+    if [ -z "$domain_name" ]; then
+        log "${RED}域名不能为空。${NC}"
+        return 1
     fi
+    # 2. 不包含空格或非法字符 (除了字母、数字、点、连字符)
+    if [[ ! "$domain_name" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        log "${RED}域名包含非法字符。${NC}"
+        return 1
+    fi
+    # 3. 不以点或连字符开头或结尾
+    if [[ "$domain_name" =~ ^[-.] ]] || [[ "$domain_name" =~ [.-]$ ]]; then
+        log "${RED}域名不能以点或连字符开头或结尾。${NC}"
+        return 1
+    fi
+    # 4. 不包含连续的点 (空标签)
+    if [[ "$domain_name" =~ \.\. ]]; then
+        log "${RED}域名包含连续的点 (空标签)，例如 'example..com'。${NC}"
+        return 1
+    fi
+    # 5. 至少包含一个点 (通常是 FQDN 的要求)
+    if [[ ! "$domain_name" =~ \. ]]; then
+        log "${RED}域名必须包含至少一个点 (例如 'example.com')。${NC}"
+        return 1
+    fi
+    return 0 # 有效
 }
 
 # 验证路径是否安全 (不包含 .. 或 /)
@@ -323,9 +343,9 @@ configure_nginx_proxy() {
         chunked_transfer_encoding off;
         proxy_buffering off;
         proxy_cache off;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+        proxy_set_header X-Forwarded-For \$remote_addr;\
+        proxy_set_header X-Forwarded-Proto \$scheme;\
+    }\
 ' '
 /^\s*server\s*{/ { in_server=1; print; next }
 /^\s*}/ && in_server { print proxy_config; in_server=0; }
