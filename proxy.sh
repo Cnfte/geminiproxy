@@ -77,6 +77,7 @@ configure_firewall() {
             if command -v ufw &> /dev/null; then
                 ufw allow 80/tcp
                 ufw allow 443/tcp
+                ufw allow 22/tcp
                 ufw --force enable
             fi
             ;;
@@ -103,8 +104,8 @@ configure_firewall() {
 # 配置Nginx
 configure_nginx() {
     read -p "请输入您的域名: " domain
-    read -p "请输入SSL证书路径(全路径): " cert_path
-    read -p "请输入SSL证书密钥路径(全路径): " key_path
+    read -p "请输入SSL证书路径(全路径.pem): " cert_path
+    read -p "请输入SSL证书密钥路径(全路径.key): " key_path
 
     # 验证证书文件是否存在
     if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
