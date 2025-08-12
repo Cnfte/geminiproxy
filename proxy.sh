@@ -2,7 +2,7 @@
 # set -e # 在遇到错误时立即退出，提高脚本健壮性
 
 # ==============================================================================
-# Gemini API 反向代理管理脚本 (v2.2.1 - 强化域名验证)
+# Gemini API 反向代理管理脚本 (v2.2.2 - 优化 Certbot 集成)
 # 作者: cnfte (整合与优化: Gemini Assistant)
 # 开源地址: https://github.com/cnfte/geminiproxy (原版)
 # 功能:
@@ -27,7 +27,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # --- 版本信息 ---
-VERSION="2.2.1" # 强化域名验证
+VERSION="2.2.2" # 优化 Certbot 集成
 CONFIG_FILE="/etc/gemini_proxy.conf"
 BACKUP_DIR="/var/backups/gemini_proxy"
 LOG_FILE="/var/log/gemini_proxy.log"
@@ -108,6 +108,8 @@ validate_domain() {
         log "${RED}域名必须包含至少一个点 (例如 'example.com')。${NC}"
         return 1
     fi
+    # 6. 支持四级域名，例如 api.proxy.example.com
+    # 上面的检查已经包含了对多级域名的支持，只要符合规则即可
     return 0 # 有效
 }
 
@@ -263,7 +265,7 @@ configure_nginx_proxy() {
     
     read -p "请输入您的域名 (例如: api.example.com): " domain
     if ! validate_domain "$domain"; then
-        log "${RED}域名格式无效或包含非法字符。${NC}"
+        # validate_domain 函数会打印错误信息
         return 1
     fi
     
@@ -343,9 +345,9 @@ configure_nginx_proxy() {
         chunked_transfer_encoding off;
         proxy_buffering off;
         proxy_cache off;
-        proxy_set_header X-Forwarded-For \$remote_addr;\
-        proxy_set_header X-Forwarded-Proto \$scheme;\
-    }\
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 ' '
 /^\s*server\s*{/ { in_server=1; print; next }
 /^\s*}/ && in_server { print proxy_config; in_server=0; }
