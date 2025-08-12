@@ -69,38 +69,6 @@ install_dependencies() {
             ;;
     esac
 }
-
-# 配置防火墙
-configure_firewall() {
-    case $OS in
-        ubuntu|debian)
-            if command -v ufw &> /dev/null; then
-                ufw allow 80/tcp
-                ufw allow 443/tcp
-                ufw allow 22/tcp
-                ufw --force enable
-            fi
-            ;;
-        centos|rhel|fedora)
-            if command -v firewall-cmd &> /dev/null; then
-                systemctl enable --now firewalld
-                firewall-cmd --permanent --add-service=http
-                firewall-cmd --permanent --add-service=https
-                firewall-cmd --reload
-            fi
-            ;;
-        arch)
-            if command -v iptables &> /dev/null; then
-                iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-                iptables-save > /etc/iptables/iptables.rules
-                systemctl enable iptables
-            fi
-            ;;
-    esac
-    log "${GREEN}防火墙已配置${NC}"
-}
-
 # 配置Nginx
 configure_nginx() {
     read -p "请输入您的域名: " domain
