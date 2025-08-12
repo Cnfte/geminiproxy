@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Gemini API 反向代理管理脚本 (v2.0.0)
-# 作者: cnfte (修改与整合: Gemini Assistant)
+# Gemini API 反向代理管理脚本 (v2.1.0)
+# 作者: cnfte (整合与优化: Gemini Assistant)
 # 开源地址: https://github.com/cnfte/geminiproxy (原版)
 # 功能:
 #   - 自动申请和续订 SSL 证书 (Let's Encrypt via Certbot)
@@ -26,7 +26,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # --- 版本信息 ---
-VERSION="2.0.0"
+VERSION="2.1.0"
 CONFIG_FILE="/etc/gemini_proxy.conf"
 BACKUP_DIR="/var/backups/gemini_proxy"
 LOG_FILE="/var/log/gemini_proxy.log"
@@ -36,6 +36,7 @@ MONITOR_WEB_DOMAIN="monitor.your_domain.com" # 请替换为您的域名或IP
 LOG_PARSER_URL="https://github.com/go-nginx/log-parser/releases/download/v0.3.0/log-parser_linux_amd64" # go-nginx-log-parser
 LOG_PARSER_BIN="/usr/local/bin/go-nginx-log-parser"
 NGINX_MONITOR_CONF="/etc/nginx/conf.d/gemini_monitor.conf"
+CERTBOT_OPTIONS_FILE="/etc/letsencrypt/options-ssl-nginx.conf" # Certbot 的 SSL 选项文件
 
 # --- 黑名单地区 ---
 # 注意: IP地理位置查询结果可能不完全准确，且服务可能不稳定。
@@ -81,30 +82,40 @@ detect_os() {
 install_dependencies() {
     log "${GREEN}正在安装基础依赖...${NC}"
     local packages=""
+    local install_cmd=""
+    
     case $OS in
         ubuntu|debian)
+            install_cmd="apt update && apt install -y"
             packages="nginx openssl curl jq bc certbot python3-certbot-nginx multitail"
-            apt update && apt install -y $packages
             ;;
         centos|rhel|fedora)
-            packages="nginx openssl curl jq bc certbot python3-certbot-nginx epel-release"
-            yum install -y $packages
-            # 对于 Fedora, 可能需要 dnf
-            if [ "$OS" == "fedora" ]; then
-                dnf install -y $packages
+            # 确保 EPEL 源已启用
+            if ! rpm -q epel-release &>/dev/null; then
+                log "${YELLOW}正在安装 EPEL 源...${NC}"
+                yum install -y epel-release || dnf install -y epel-release
+                if [ $? -ne 0 ]; then
+                    log "${RED}安装 EPEL 源失败，请手动安装。${NC}"
+                    return 1
+                fi
             fi
+            install_cmd="yum install -y"
+            if [ "$OS" == "fedora" ]; then
+                install_cmd="dnf install -y"
+            fi
+            packages="nginx openssl curl jq bc certbot python3-certbot-nginx multitail"
             ;;
         arch)
+            install_cmd="pacman -Sy --noconfirm"
             packages="nginx openssl curl jq bc certbot python-certbot-nginx multitail"
-            pacman -Sy --noconfirm $packages
             ;;
         *)
             log "${RED}不支持的操作系统: $OS${NC}"
-            exit 1
+            return 1
             ;;
     esac
     
-    if [ $? -ne 0 ]; then
+    if ! $install_cmd $packages; then
         log "${RED}基础依赖安装失败，请检查错误信息。${NC}"
         return 1
     fi
@@ -134,6 +145,8 @@ install_log_parser() {
 # --- 配置防火墙 ---
 configure_firewall() {
     log "${GREEN}正在配置防火墙...${NC}"
+    local firewall_configured=false
+    
     case $OS in
         ubuntu|debian)
             if command -v ufw &> /dev/null; then
@@ -142,8 +155,7 @@ configure_firewall() {
                 ufw allow $MONITOR_WEB_PORT/tcp comment 'Gemini Monitor'
                 ufw reload
                 log "${GREEN}UFW 防火墙已配置。${NC}"
-            else
-                log "${YELLOW}警告: 未检测到 UFW，请手动配置防火墙。${NC}"
+                firewall_configured=true
             fi
             ;;
         centos|rhel|fedora)
@@ -154,8 +166,7 @@ configure_firewall() {
                 firewall-cmd --permanent --add-port=$MONITOR_WEB_PORT/tcp
                 firewall-cmd --reload
                 log "${GREEN}Firewalld 已配置。${NC}"
-            else
-                log "${YELLOW}警告: 未检测到 firewalld，请手动配置防火墙。${NC}"
+                firewall_configured=true
             fi
             ;;
         arch)
@@ -163,15 +174,37 @@ configure_firewall() {
                 iptables -A INPUT -p tcp --dport 80 -j ACCEPT
                 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
                 iptables -A INPUT -p tcp --dport $MONITOR_WEB_PORT -j ACCEPT
-                iptables-save > /etc/iptables/iptables.rules
-                systemctl enable iptables
-                log "${GREEN}iptables 已配置。${NC}"
-            else
-                log "${YELLOW}警告: 未检测到 iptables，请手动配置防火墙。${NC}"
+                # 确保 iptables-persistent 或类似服务已启用
+                if command -v iptables-save &> /dev/null; then
+                    iptables-save > /etc/iptables/iptables.rules
+                    systemctl enable iptables
+                    log "${GREEN}iptables 已配置并保存规则。${NC}"
+                    firewall_configured=true
+                else
+                    log "${YELLOW}警告: 未检测到 iptables-save 命令，防火墙规则可能不会在重启后生效。${NC}"
+                fi
             fi
             ;;
     esac
+    
+    if ! $firewall_configured; then
+        log "${YELLOW}警告: 未能自动配置防火墙。请确保端口 80, 443, $MONITOR_WEB_PORT 已开放。${NC}"
+    fi
     return 0
+}
+
+# --- 获取 Certbot 的 SSL Session Cache 大小 ---
+get_certbot_ssl_cache_size() {
+    if [ -f "$CERTBOT_OPTIONS_FILE" ]; then
+        local size=$(grep "ssl_session_cache" "$CERTBOT_OPTIONS_FILE" | awk '{print $4}' | sed 's/;//')
+        if [ -n "$size" ]; then
+            echo "$size"
+        else
+            echo "1m" # 默认值，如果获取失败
+        fi
+    else
+        echo "1m" # 默认值，如果文件不存在
+    fi
 }
 
 # --- 配置 Nginx 主反代 ---
@@ -205,12 +238,27 @@ configure_nginx_proxy() {
         fi
         
         # 尝试使用 Nginx 插件获取证书
+        # Certbot 的 --nginx 插件会尝试自动配置 Nginx，包括 ssl_session_cache
+        # 我们将移除脚本中对 ssl_session_cache 的手动设置，以避免冲突
         certbot --nginx -d "$domain" --non-interactive --agree-tos --email "$email"
         if [ $? -eq 0 ]; then
             log "${GREEN}SSL 证书申请成功！${NC}"
+            # Certbot 会自动更新 Nginx 配置，我们只需要知道证书路径
             cert_path="/etc/letsencrypt/live/$domain/fullchain.pem"
             key_path="/etc/letsencrypt/live/$domain/privkey.pem"
-            # Certbot 应该已经更新了 Nginx 配置，但我们还是需要保存我们的反代配置
+            
+            # 保存配置到 .conf 文件，但移除可能冲突的 SSL 参数
+            echo "DOMAIN=$domain" > $CONFIG_FILE
+            echo "CERT_PATH=$cert_path" >> $CONFIG_FILE
+            echo "KEY_PATH=$key_path" >> $CONFIG_FILE
+            echo "PROXY_TARGET=https://generativelanguage.googleapis.com/" >> $CONFIG_FILE
+            
+            # 重新加载 Nginx 配置以应用 Certbot 的更改和我们的反代配置
+            if ! nginx -t; then
+                log "${RED}Nginx 配置测试失败，Certbot 可能修改了配置导致冲突。请手动检查 Nginx 配置。${NC}"
+                return 1
+            fi
+            restart_nginx
         else
             log "${RED}SSL 证书申请失败，请检查错误信息。${NC}"
             return 1
@@ -223,16 +271,18 @@ configure_nginx_proxy() {
             log "${RED}证书文件不存在，请检查路径。${NC}"
             return 1
         fi
-    fi
-    
-    # 保存配置到 .conf 文件
-    echo "DOMAIN=$domain" > $CONFIG_FILE
-    echo "CERT_PATH=$cert_path" >> $CONFIG_FILE
-    echo "KEY_PATH=$key_path" >> $CONFIG_FILE
-    echo "PROXY_TARGET=https://generativelanguage.googleapis.com/" >> $CONFIG_FILE
-    
-    # 创建 Nginx 配置文件
-    cat > /etc/nginx/conf.d/gemini_proxy.conf <<EOF
+        
+        # 获取 Certbot 的 SSL Session Cache 大小，以保持一致性
+        local ssl_session_cache_size=$(get_certbot_ssl_cache_size)
+        
+        # 保存配置到 .conf 文件
+        echo "DOMAIN=$domain" > $CONFIG_FILE
+        echo "CERT_PATH=$cert_path" >> $CONFIG_FILE
+        echo "KEY_PATH=$key_path" >> $CONFIG_FILE
+        echo "PROXY_TARGET=https://generativelanguage.googleapis.com/" >> $CONFIG_FILE
+        
+        # 创建 Nginx 配置文件
+        cat > /etc/nginx/conf.d/gemini_proxy.conf <<EOF
 server {
     listen 80;
     server_name $domain;
@@ -246,8 +296,8 @@ server {
     ssl_certificate $cert_path;
     ssl_certificate_key $key_path;
     
-    # SSL 优化参数 (由 Certbot 或其选项文件管理，避免重复声明)
-    # ssl_session_cache shared:le_nginx_SSL:1m; # <-- 移除此行
+    # SSL 优化参数 (使用 Certbot 的配置，并保持 ssl_session_cache 一致)
+    ssl_session_cache shared:le_nginx_SSL:$ssl_session_cache_size;
     ssl_session_timeout 1440m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
@@ -275,16 +325,15 @@ server {
     }
 }
 EOF
+    fi
     
     # 测试 Nginx 配置
-    nginx -t
-    if [ $? -eq 0 ]; then
-        log "${GREEN}Nginx 配置测试成功${NC}"
-        return 0
-    else
+    if ! nginx -t; then
         log "${RED}Nginx 配置测试失败，请检查配置。${NC}"
         return 1
     fi
+    log "${GREEN}Nginx 配置测试成功${NC}"
+    return 0
 }
 
 # --- 配置 Nginx 监控面板 ---
@@ -335,14 +384,12 @@ server {
 EOF
     
     # 测试 Nginx 配置
-    nginx -t
-    if [ $? -eq 0 ]; then
-        log "${GREEN}Nginx 监控面板配置测试成功${NC}"
-        return 0
-    else
+    if ! nginx -t; then
         log "${RED}Nginx 监控面板配置测试失败，请检查配置。${NC}"
         return 1
     fi
+    log "${GREEN}Nginx 监控面板配置测试成功${NC}"
+    return 0
 }
 
 # --- 设置定时任务生成监控报告 ---
@@ -446,19 +493,19 @@ cat > "\$OUTPUT_DIR/index.html" <<EOF
         </table>
         
         <h2>近12小时请求 IP</h2>
-        <p>唯一 IP 数量: $(jq '. | length' $OUTPUT_DIR/recent_ips.json)</p>
-        <pre>$(jq -c '.[]' $OUTPUT_DIR/recent_ips.json | paste -sd ' ')</pre>
+        <p>唯一 IP 数量: $(jq '. | length' $OUTPUT_DIR/recent_ips.json 2>/dev/null || echo "N/A")</p>
+        <pre>$(jq -c '.[]' $OUTPUT_DIR/recent_ips.json 2>/dev/null | paste -sd ' ')</pre>
         
         <h2>近5天请求记录</h2>
         <table>
             <tr><th>IP 地址</th><th>时间</th><th>请求</th><th>状态码</th><th>流量 (Bytes)</th></tr>
-            $(jq -r '.[] | "<tr><td>\(.remote_addr)</td><td>\(.time_local)</td><td>\(.request)</td><td>\(.status)</td><td>\(.body_bytes_sent)</td></tr>"' $OUTPUT_DIR/recent_requests.json)
+            $(jq -r '.[] | "<tr><td>\(.remote_addr)</td><td>\(.time_local)</td><td>\(.request)</td><td>\(.status)</td><td>\(.body_bytes_sent)</td></tr>"' $OUTPUT_DIR/recent_requests.json 2>/dev/null || echo "<tr><td colspan='5'>无法加载数据</td></tr>")
         </table>
         
         <h2>近15天流量统计 (按天)</h2>
         <table>
             <tr><th>日期</th><th>总流量 (Bytes)</th></tr>
-            $(jq -r '.[] | "<tr><td>\(.day)</td><td>\(.body_bytes_sent)</td></tr>"' $OUTPUT_DIR/traffic_usage.json)
+            $(jq -r '.[] | "<tr><td>\(.day)</td><td>\(.body_bytes_sent)</td></tr>"' $OUTPUT_DIR/traffic_usage.json 2>/dev/null || echo "<tr><td colspan='2'>无法加载数据</td></tr>")
         </table>
     </div>
 </body>
@@ -473,29 +520,64 @@ EOF
     
     # 添加 cron 任务
     # 每天生成两次报告，例如凌晨 0 点和中午 12 点
-    (crontab -l 2>/dev/null | grep -v "$analyze_script"; echo "0 0,12 * * * $analyze_script > /dev/null 2>&1") | crontab -
-    
-    log "${GREEN}定时任务已设置。监控报告将生成在 $MONITOR_WEB_ROOT${NC}"
+    # 使用 crontab -e 可能会导致交互问题，直接修改 crontab 更可靠
+    if ! crontab -l 2>/dev/null | grep -q "$analyze_script"; then
+        (crontab -l 2>/dev/null; echo "0 0,12 * * * $analyze_script > /dev/null 2>&1") | crontab -
+        log "${GREEN}定时任务已设置。监控报告将生成在 $MONITOR_WEB_ROOT${NC}"
+    else
+        log "${YELLOW}定时任务已存在，未重复添加。${NC}"
+    fi
     return 0
 }
 
 # --- 启动 Nginx ---
 start_nginx() {
-    systemctl enable nginx
-    systemctl start nginx
-    log "${GREEN}Nginx 已启动${NC}"
+    if ! systemctl is-active nginx &>/dev/null; then
+        systemctl enable nginx
+        systemctl start nginx
+        if [ $? -eq 0 ]; then
+            log "${GREEN}Nginx 已启动${NC}"
+        else
+            log "${RED}启动 Nginx 失败。${NC}"
+            return 1
+        fi
+    else
+        log "${YELLOW}Nginx 服务已在运行。${NC}"
+    fi
+    return 0
 }
 
 # --- 重启 Nginx ---
 restart_nginx() {
-    systemctl restart nginx
-    log "${GREEN}Nginx 已重启${NC}"
+    if systemctl is-active nginx &>/dev/null; then
+        systemctl restart nginx
+        if [ $? -eq 0 ]; then
+            log "${GREEN}Nginx 已重启${NC}"
+        else
+            log "${RED}重启 Nginx 失败。${NC}"
+            return 1
+        fi
+    else
+        log "${YELLOW}Nginx 服务未运行，尝试启动。${NC}"
+        start_nginx
+    fi
+    return 0
 }
 
 # --- 停止 Nginx ---
 stop_nginx() {
-    systemctl stop nginx
-    log "${YELLOW}Nginx 已停止${NC}"
+    if systemctl is-active nginx &>/dev/null; then
+        systemctl stop nginx
+        if [ $? -eq 0 ]; then
+            log "${YELLOW}Nginx 已停止${NC}"
+        else
+            log "${RED}停止 Nginx 失败。${NC}"
+            return 1
+        fi
+    else
+        log "${YELLOW}Nginx 服务未运行。${NC}"
+    fi
+    return 0
 }
 
 # --- 卸载 Nginx ---
@@ -541,7 +623,10 @@ full_remove() {
     rm -f "/usr/local/bin/analyze_gemini_logs.sh"
     
     # 移除 cron 任务
-    (crontab -l 2>/dev/null | grep -v "/usr/local/bin/analyze_gemini_logs.sh") | crontab -
+    if command -v crontab &>/dev/null; then
+        (crontab -l 2>/dev/null | grep -v "/usr/local/bin/analyze_gemini_logs.sh") | crontab -
+        log "${GREEN}监控报告定时任务已移除。${NC}"
+    fi
     
     log "${GREEN}所有 Nginx 和 Gemini Proxy 相关文件和配置已删除${NC}"
 }
@@ -576,11 +661,17 @@ restore_config() {
     read -p "请输入要恢复的备份文件路径: " backup_file
     
     if [ -f "$backup_file" ]; then
-        tar -xzf "$backup_file" -C / --strip-components=1 # 假设备份文件内包含 conf.d 和 .conf
-        log "${GREEN}配置已从 $backup_file 恢复${NC}"
-        # 重新加载 Nginx 配置
-        if systemctl is-active nginx &> /dev/null; then
-            restart_nginx
+        # 备份文件通常包含 /etc/nginx/conf.d/gemini_proxy.conf 和 /etc/gemini_proxy.conf
+        # 使用 --strip-components=1 来避免创建多余的顶层目录
+        tar -xzf "$backup_file" -C / --strip-components=1
+        if [ $? -eq 0 ]; then
+            log "${GREEN}配置已从 $backup_file 恢复${NC}"
+            # 重新加载 Nginx 配置
+            if systemctl is-active nginx &> /dev/null; then
+                restart_nginx
+            fi
+        else
+            log "${RED}恢复配置失败。${NC}"
         fi
     else
         log "${RED}指定的备份文件不存在${NC}"
@@ -597,8 +688,12 @@ check_status() {
     
     # Nginx 监控面板服务状态
     if [ -f "$NGINX_MONITOR_CONF" ]; then
-        monitor_nginx_status=$(systemctl is-active nginx 2>/dev/null || echo "inactive") # Nginx 监控面板使用同一个服务
-        echo -e "Nginx 监控面板服务: $monitor_nginx_status (监听端口: $MONITOR_WEB_PORT)"
+        # Nginx 监控面板使用同一个服务，检查是否监听端口
+        if ss -tulnp | grep -q ":$MONITOR_WEB_PORT"; then
+            echo -e "Nginx 监控面板服务: 运行中 (监听端口: $MONITOR_WEB_PORT)"
+        else
+            echo -e "Nginx 监控面板服务: 未运行或未监听端口 $MONITOR_WEB_PORT"
+        fi
     else
         echo -e "Nginx 监控面板服务: 未配置"
     fi
@@ -612,7 +707,7 @@ check_status() {
     fi
     
     # Cron 任务状态
-    if crontab -l 2>/dev/null | grep -q "/usr/local/bin/analyze_gemini_logs.sh"; then
+    if command -v crontab &>/dev/null && crontab -l 2>/dev/null | grep -q "/usr/local/bin/analyze_gemini_logs.sh"; then
         echo -e "监控报告定时任务: 已设置"
     else
         echo -e "监控报告定时任务: 未设置"
@@ -639,7 +734,7 @@ check_status() {
                     echo -e "证书过期时间: $(date -d @$cert_expiry_ts '+%Y-%m-%d') (剩余 $days_left 天)"
                 fi
             else
-                echo -e "证书过期时间: ${RED}无法获取${NC}"
+                echo -e "证书状态: ${RED}无法获取过期时间${NC}"
             fi
         else
             echo -e "证书状态: ${RED}证书文件不存在${NC}"
@@ -729,9 +824,7 @@ monitor_terminal_dashboard() {
             request_count=$(wc -l < /var/log/nginx/gemini_access.log)
             echo -e "${CYAN}请求总次数: ${GREEN}${request_count}${NC}"
             
-            # 流量统计 (近24小时，需要解析日志中的 %b)
-            # 这是一个简化的示例，实际需要更复杂的日志解析
-            # 假设我们统计的是日志文件大小作为近似流量
+            # 访问日志大小作为近似流量
             log_size_bytes=$(du -b /var/log/nginx/gemini_access.log | cut -f1)
             log_size_human=$(numfmt --to=iec --suffix=B $log_size_bytes)
             echo -e "${CYAN}访问日志大小: ${GREEN}${log_size_human}${NC}"
@@ -768,17 +861,15 @@ monitor_web_panel() {
         return 1
     fi
     
-    # 启动 Nginx 监控面板服务
-    systemctl enable nginx
-    systemctl start nginx
+    # 启动 Nginx 服务 (如果未运行)
+    if ! start_nginx; then
+        log "${RED}启动 Nginx 服务失败，无法启动监控面板。${NC}"
+        return 1
+    fi
     
     log "${GREEN}Web 监控面板已启动，请访问: http://$MONITOR_WEB_DOMAIN:$MONITOR_WEB_PORT${NC}"
     log "${GREEN}监控报告将每小时自动更新。${NC}"
     
-    # 保持脚本运行，直到用户中断
-    log "${CYAN}按 Ctrl+C 停止监控面板服务 (但定时任务会继续运行)。${NC}"
-    # 实际上，Nginx 服务是后台运行的，这个函数只是启动它并给出提示
-    # 如果需要一个前台进程来管理监控面板，可以考虑使用 screen 或 systemd 服务
     return 0
 }
 
@@ -876,36 +967,11 @@ check_geo_blacklist() {
     return 0 # 返回成功，表示不在黑名单内
 }
 
-# --- 显示菜单 ---
-show_menu() {
-    clear
-    echo -e "${GREEN}=====================================${NC}"
-    echo -e "${GREEN}    Gemini API 反代管理脚本 v$VERSION${NC}"
-    echo -e "${YELLOW}    作者: cnfte (整合与优化: Gemini Assistant)${NC}"
-    echo -e "${RED}    开源地址: https://github.com/cnfte/geminiproxy${NC}"
-    echo -e "${GREEN}=====================================${NC}"
-    echo -e "  --- 服务管理 ---"
-    echo -e "  1. 安装反代服务 (含 SSL 自动申请)"
-    echo -e "  2. 重启反代服务"
-    echo -e "  3. 停止反代服务"
-    echo -e "  4. 卸载反代服务"
-    echo -e "  5. 完全删除所有相关文件和配置"
-    echo -e "  6. 备份当前配置"
-    echo -e "  7. 恢复配置"
-    echo -e "  8. 检查服务状态"
-    echo -e "  9. 终端监控面板 (实时系统资源)"
-    echo -e " 10. 代理状态监控 (终端, 检查 API 可达性)"
-    echo -e " 11. Web 监控面板 (生成日志报告)"
-    echo -e " 12. 查看日志"
-    echo -e "  0. 退出脚本"
-    echo -e "${GREEN}=====================================${NC}"
-    read -p "请输入选项 [0-12]: " option
-}
-
 # --- 更新脚本 ---
 update_script() {
     log "${CYAN}正在检查脚本更新...${NC}"
-    local latest_script_url="https://raw.githubusercontent.com/cnfte/geminiproxy/main/proxy.sh" # 假设这是最新版本地址
+    # 假设这是最新版本地址，请根据实际情况修改
+    local latest_script_url="https://raw.githubusercontent.com/cnfte/geminiproxy/main/proxy.sh" 
     local current_script_path=$(realpath "$0")
     
     # 尝试下载最新脚本内容
@@ -916,7 +982,7 @@ update_script() {
         return 1
     fi
     
-    # 比较当前脚本和最新脚本 (简单比较第一行版本号)
+    # 比较当前脚本和最新脚本 (简单比较版本号)
     local current_version=$(grep "^VERSION=" "$current_script_path" | cut -d'=' -f2 | tr -d '"')
     local latest_version=$(echo "$latest_script_content" | grep "^VERSION=" | cut -d'=' -f2 | tr -d '"')
     
@@ -947,6 +1013,36 @@ update_script() {
     fi
 }
 
+# --- 显示菜单 ---
+show_menu() {
+    clear
+    echo -e "${GREEN}=====================================${NC}"
+    echo -e "${GREEN}    Gemini API 反代管理脚本 v$VERSION${NC}"
+    echo -e "${YELLOW}    作者: cnfte (整合与优化: Gemini Assistant)${NC}"
+    echo -e "${RED}    开源地址: https://github.com/cnfte/geminiproxy${NC}"
+    echo -e "${GREEN}=====================================${NC}"
+    echo -e "  --- 服务管理 ---"
+    echo -e "  1. 安装反代服务 (含 SSL 自动申请)"
+    echo -e "  2. 重启反代服务"
+    echo -e "  3. 停止反代服务"
+    echo -e "  4. 卸载反代服务"
+    echo -e "  5. 完全删除所有相关文件和配置"
+    echo -e "  --- 配置管理 ---"
+    echo -e "  6. 备份当前配置"
+    echo -e "  7. 恢复配置"
+    echo -e "  --- 监控与日志 ---"
+    echo -e "  8. 检查服务状态"
+    echo -e "  9. 终端监控面板 (实时系统资源)"
+    echo -e " 10. 代理状态监控 (终端, 检查 API 可达性)"
+    echo -e " 11. Web 监控面板 (生成日志报告)"
+    echo -e " 12. 查看日志"
+    echo -e "  --- 系统操作 ---"
+    echo -e " 13. 更新脚本到最新版本"
+    echo -e "  0. 退出脚本"
+    echo -e "${GREEN}=====================================${NC}"
+    read -p "请输入选项 [0-13]: " option
+}
+
 # --- 主函数 ---
 main() {
     check_root
@@ -971,33 +1067,27 @@ main() {
             1) # 安装反代服务
                 if ! check_geo_blacklist; then log "${RED}安装失败：服务器所在地在黑名单内。${NC}"; break; fi
                 if install_dependencies && configure_nginx_proxy; then
-                    start_nginx
                     # 尝试安装日志解析器和配置监控面板
                     install_log_parser
                     configure_nginx_monitor
                     setup_monitor_cron
-                    start_nginx # 重新启动以加载监控面板配置
-                    log "${GREEN}反代服务安装完成。${NC}"
-                    log "${GREEN}Web 监控面板地址: http://$MONITOR_WEB_DOMAIN:$MONITOR_WEB_PORT${NC}"
+                    # 确保 Nginx 服务已启动并加载了所有配置
+                    if ! start_nginx; then
+                        log "${RED}启动 Nginx 服务失败，安装可能不完整。${NC}"
+                    else
+                        log "${GREEN}反代服务安装完成。${NC}"
+                        log "${GREEN}Web 监控面板地址: http://$MONITOR_WEB_DOMAIN:$MONITOR_WEB_PORT${NC}"
+                    fi
                 else
                     log "${RED}反代服务安装失败。${NC}"
                 fi
                 ;;
             2) # 重启反代服务
                 if ! check_geo_blacklist; then log "${RED}重启失败：服务器所在地在黑名单内。${NC}"; break; fi
-                if systemctl is-active nginx &> /dev/null; then
-                    restart_nginx
-                else
-                    log "${YELLOW}Nginx 服务未运行，尝试启动。${NC}"
-                    start_nginx
-                fi
+                restart_nginx
                 ;;
             3) # 停止反代服务
-                if systemctl is-active nginx &> /dev/null; then
-                    stop_nginx
-                else
-                    log "${YELLOW}Nginx 服务未运行。${NC}"
-                fi
+                stop_nginx
                 ;;
             4) # 卸载反代服务
                 if ! check_geo_blacklist; then log "${RED}卸载失败：服务器所在地在黑名单内。${NC}"; break; fi
