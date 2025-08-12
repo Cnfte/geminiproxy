@@ -427,7 +427,14 @@ server {
     ssl_certificate_key $key_path;
     
     # SSL 优化参数 (使用 Certbot 的配置，并保持 ssl_session_cache 一致)
-    ssl_session_cache shared:le_nginx_SSL:$ssl_session_cache_size;
+    # SSL 优化参数 (使用 Certbot 的配置，并保持 ssl_session_cache 一致)
+    # 如果 Certbot 的 options-ssl-nginx.conf 存在，则不要重复声明 ssl_session_cache 以避免冲突
+    if [ -f /etc/letsencrypt/options-ssl-nginx.conf ]; then
+        include /etc/letsencrypt/options-ssl-nginx.conf;
+    else
+        ssl_session_cache shared:le_nginx_SSL:1m;
+    fi
+
     ssl_session_timeout 1440m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
