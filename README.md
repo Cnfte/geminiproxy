@@ -77,12 +77,17 @@
 
 选择一个你最喜欢的方式来执行下面的命令吧：
 
+方法一：下载脚本后手动运行（推荐给想看清楚每一步的你！）
+
 ```shell
-# 方法一：下载脚本后手动运行（推荐给想看清楚每一步的你！）
 wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh
 sudo bash proxy.sh
-# 方法二：下载并立即运行脚本（一气呵成，简单快捷！）
+```
+方法二：下载并立即运行脚本（一气呵成，简单快捷！）
+```shell
 wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh && sudo bash proxy.sh
-# 方法三：下载、运行并删除脚本（用完即走，不留痕迹！）
+```
+方法三：下载、运行并删除脚本（用完即走，不留痕迹！）
+```shell
 wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh && sudo bash proxy.sh && rm proxy.sh
 ```
