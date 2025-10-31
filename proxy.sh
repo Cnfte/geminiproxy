@@ -445,7 +445,7 @@ monitor_all(){
   trap 'log "${CYAN}监控结束${NC}"; exit 0' INT
 
   local prev_cpu_total=0 prev_idle_total=0
-  local get_cpu_usage() {
+  get_cpu_usage() { # <-- 这里去掉了 local
     local cpu_line=$(grep "^cpu " /proc/stat)
     local total_time=$(echo $cpu_line | awk '{for(i=2;i<=NF;i++) sum+=$i} END {print sum}')
     local idle_time=$(echo $cpu_line | awk '{print $5}')
