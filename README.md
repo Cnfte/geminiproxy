@@ -93,3 +93,4 @@ wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.s
 ```shell
 wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh && sudo bash proxy.sh && rm proxy.sh
 ```
+**如果可以，请给项目点个star不胜感激**
