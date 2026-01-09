@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <title>快速开始 | Gemini Proxy 文档</title>
+    <style>
+        :root {
+            --brand-color: #3eaf7c;
+            --text-color: #2c3e50;
+            --border-color: #eaecef;
+            --code-bg: #f6f8fa;
+            --sidebar-width: 260px;
+            --bg-color: #ffffff;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #1a1a1a;
+                --text-color: #e1e1e1;
+                --border-color: #30363d;
+                --code-bg: #282c34;
+            }
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.7;
+        }
+
+        /* 布局 */
+        header {
+            height: 60px;
+            position: fixed;
+            top: 0; width: 100%;
+            background: var(--bg-color);
+            border-bottom: 1px solid var(--border-color);
+            display: flex; align-items: center;
+            padding: 0 1.5rem; z-index: 100;
+        }
+
+        aside {
+            width: var(--sidebar-width);
+            position: fixed; top: 60px; bottom: 0; left: 0;
+            border-right: 1px solid var(--border-color);
+            padding: 2rem 1.5rem;
+            overflow-y: auto;
+        }
+
+        main {
+            margin-left: var(--sidebar-width);
+            padding: 80px 4rem 4rem;
+            max-width: 1000px;
+        }
+
+        /* 导航 */
+        .nav-title { font-weight: 700; font-size: 0.85rem; color: #999; margin: 1rem 0 0.5rem; text-transform: uppercase; }
+        .nav-link { display: block; padding: 0.4rem 0; color: var(--text-color); text-decoration: none; font-size: 0.95rem; }
+        .nav-link.active { color: var(--brand-color); font-weight: 600; border-right: 2px solid var(--brand-color); }
+
+        /* 内容组件 */
+        h1 { font-size: 2.2rem; margin-bottom: 1.5rem; }
+        h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border-color); }
+        p { margin-bottom: 1rem; }
+
+        .tip-block {
+            padding: 1rem 1.5rem;
+            background-color: rgba(62, 175, 124, 0.1);
+            border-left: 0.5rem solid var(--brand-color);
+            border-radius: 4px;
+            margin: 1.5rem 0;
+        }
+        .tip-block-title { font-weight: 700; color: var(--brand-color); margin-bottom: 0.3rem; }
+
+        .warning-block {
+            padding: 1rem 1.5rem;
+            background-color: rgba(230, 162, 60, 0.1);
+            border-left: 0.5rem solid #e6a23c;
+            border-radius: 4px;
+            margin: 1.5rem 0;
+        }
+
+        /* 图文引导 */
+        .step-container { margin: 2rem 0; }
+        .step-figure { margin: 1.5rem 0; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; background: #f9f9f9; }
+        .step-figure img { width: 100%; display: block; }
+        .step-caption { padding: 0.8rem; font-size: 0.85rem; text-align: center; color: #666; background: var(--code-bg); }
+
+        code { font-family: monospace; background: var(--code-bg); padding: 0.2rem 0.4rem; border-radius: 3px; }
+        pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
+
+        @media (max-width: 768px) {
+            aside { display: none; }
+            main { margin-left: 0; padding: 80px 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div style="font-weight:700; font-size:1.2rem;">GeminiProxy <span style="font-weight:normal; opacity:0.5;">Docs</span></div>
+    </header>
+
+    <aside>
+        <div class="nav-title">指南</div>
+        <a href="#" class="nav-link active">快速开始</a>
+        <a href="#" class="nav-link">功能概述</a>
+        <div class="nav-title">部署</div>
+        <a href="#prepare" class="nav-link">环境准备</a>
+        <a href="#install" class="nav-link">执行安装</a>
+        <a href="#use" class="nav-link">开始使用</a>
+    </aside>
+
+    <main>
+        <h1>快速开始</h1>
+        <p>GeminiProxy 是一款专为国内用户优化的一键式 Gemini API 反向代理脚本。通过简单的 Shell 指令，即可在您的 VPS 上搭建稳定的 API 通道。</p>
+
+        <div class="tip-block">
+            <p class="tip-block-title">功能特性</p>
+            <ul>
+                <li>单一命令完成部署，支持 Ubuntu/Debian/CentOS/Arch</li>
+                <li>自动优化网络连接，解决 Gemini 访问受阻问题</li>
+                <li>集成 Nginx 自动配置与 SSL 证书申请</li>
+            </ul>
+        </div>
+
+        <h2 id="prepare">1. 服务器准备</h2>
+        <p>部署前请确保您拥有一台具备公网 IP 的服务器，并建议使用 <code>root</code> 用户登录。推荐使用<strong>马来西亚、韩国、日本</strong>等亚洲区域的 VPS 以获得更佳延迟。</p>
+        
+        <figure class="step-figure">
+            <img src="img/1.jpg" alt="服务器登录信息确认">
+            <figcaption class="step-caption">图 1：确认服务器运行状态与登录凭证</figcaption>
+        </figure>
+
+        <h2 id="install">2. 执行安装命令</h2>
+        <div class="warning-block">
+            <p><strong>注意：</strong> 若选择使用 Nginx，请确保您的域名已解析至当前服务器 IP。NAT 服务器用户请务必选择脚本中的第 4 种 SSL 获取方式。</p>
+        </div>
+
+        <p>在 SSH 终端（推荐使用 Xshell 或 FinalShell）中复制并运行以下任一命令：</p>
+        <pre><code># 推荐方式：下载、执行并自动清理
+wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.sh && sudo bash proxy.sh && rm proxy.sh</code></pre>
+
+        <figure class="step-figure">
+            <img src="img/4.jpg" alt="终端执行脚本">
+            <figcaption class="step-caption">图 2：在终端粘贴命令并回车，进入交互式安装界面</figcaption>
+        </figure>
+
+        <p>在管理界面输入数字 <code>1</code> 开始安装。脚本会询问您的<strong>域名、映射端口</strong>。请根据提示完成录入：</p>
+
+        <figure class="step-figure">
+            <img src="img/5.jpg" alt="安装参数配置">
+            <figcaption class="step-caption">图 3：按提示配置域名及 SSL 证书申请方式</figcaption>
+        </figure>
+
+        <h2 id="use">3. 客户端配置</h2>
+        <p>安装成功后，您可以在 <strong>Chatbox</strong> 等 AI 客户端中直接填入您的代理域名进行通信。</p>
+
+        <figure class="step-figure">
+            <img src="img/7.jpg" alt="设置代理地址">
+            <figcaption class="step-caption">图 4：在 Chatbox 设置中填入您的代理域名与 API Key</figcaption>
+        </figure>
+
+        <div class="warning-block">
+            <p><strong>关于 API Key：</strong> 本脚本不提供 Key，您需要前往 <a href="https://ai.google.dev/" target="_blank">Google AI Studio</a> 自行获取。</p>
+        </div>
+
+        <p>配置完成后，即可享受无缝的 Gemini 交互体验！</p>
+    </main>
+
+</body>
+</html>
