@@ -40,7 +40,15 @@
             background: var(--bg-color);
             border-bottom: 1px solid var(--border-color);
             display: flex; align-items: center;
+            justify-content: space-between;
             padding: 0 1.5rem; z-index: 100;
+        }
+        .version-tag {
+            font-size: 0.8rem;
+            color: #999;
+            border: 1px solid var(--border-color);
+            padding: 0.15rem 0.6rem;
+            border-radius: 999px;
         }
 
         aside {
@@ -65,7 +73,14 @@
         /* 内容组件 */
         h1 { font-size: 2.2rem; margin-bottom: 1.5rem; }
         h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border-color); }
+        h3 { font-size: 1.15rem; margin: 1.8rem 0 0.8rem; }
         p { margin-bottom: 1rem; }
+        ul, ol { margin: 0 0 1rem 1.5rem; }
+        li { margin-bottom: 0.4rem; }
+
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.92rem; }
+        th, td { border: 1px solid var(--border-color); padding: 0.6rem 0.8rem; text-align: left; vertical-align: top; }
+        th { background: var(--code-bg); }
 
         .tip-block {
             padding: 1rem 1.5rem;
@@ -92,6 +107,7 @@
 
         code { font-family: monospace; background: var(--code-bg); padding: 0.2rem 0.4rem; border-radius: 3px; }
         pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
+        pre code { background: none; padding: 0; }
 
         @media (max-width: 768px) {
             aside { display: none; }
@@ -103,6 +119,7 @@
 
     <header>
         <div style="font-weight:700; font-size:1.2rem;">GeminiProxy <span style="font-weight:normal; opacity:0.5;">Docs</span></div>
+        <span class="version-tag">v2.2.0</span>
     </header>
 
     <aside>
@@ -112,24 +129,32 @@
         <div class="nav-title">部署</div>
         <a href="#prepare" class="nav-link">环境准备</a>
         <a href="#install" class="nav-link">执行安装</a>
+        <a href="#ssl" class="nav-link">证书获取方式</a>
         <a href="#use" class="nav-link">开始使用</a>
+        <div class="nav-title">管理</div>
+        <a href="#menu" class="nav-link">管理菜单一览</a>
+        <a href="#access" class="nav-link">访问控制</a>
+        <a href="#monitor" class="nav-link">监控与日志</a>
+        <a href="#paths" class="nav-link">配置与日志路径</a>
     </aside>
 
     <main>
         <h1>快速开始</h1>
-        <p>GeminiProxy 是一款专为国内用户优化的一键式 Gemini API 反向代理脚本。通过简单的 Shell 指令，即可在您的 VPS 上搭建稳定的 API 通道。</p>
+        <p>GeminiProxy 是一款专为国内用户优化的一键式 Gemini API 反向代理脚本。通过简单的 Shell 指令，即可在您的 VPS 上搭建稳定的 API 通道，并附带完整的后续运维管理菜单（重启、备份、监控、访问控制等）。</p>
 
         <div class="tip-block">
             <p class="tip-block-title">功能特性</p>
             <ul>
-                <li>单一命令完成部署，支持 Ubuntu/Debian/CentOS/Arch</li>
+                <li>单一命令完成部署，支持 Ubuntu / Debian / CentOS / RHEL / Fedora / Rocky / AlmaLinux / Arch / openSUSE / Alpine</li>
                 <li>自动优化网络连接，解决 Gemini 访问受阻问题</li>
-                <li>集成 Nginx 自动配置与 SSL 证书申请</li>
+                <li>集成 Nginx 自动配置，支持 4 种 SSL 证书获取方式</li>
+                <li>内置 Basic Auth 密码保护与 IP 白名单访问控制</li>
+                <li>提供备份/恢复、状态检查、资源监控、日志查看、证书续期等 12 项管理功能</li>
             </ul>
         </div>
 
         <h2 id="prepare">1. 服务器准备</h2>
-        <p>部署前请确保您拥有一台具备公网 IP 的服务器，并建议使用 <code>root</code> 用户登录。推荐使用<strong>马来西亚、韩国、日本</strong>等亚洲区域的 VPS 以获得更佳延迟。</p>
+        <p>部署前请确保您拥有一台具备公网 IP 的服务器（或已配置端口映射的 NAT 服务器），并建议使用 <code>root</code> 用户登录，脚本运行时也会检查 root 权限。推荐使用<strong>马来西亚、韩国、日本</strong>等亚洲区域，或欧洲的 VPS 以获得更佳延迟。</p>
         
         <figure class="step-figure">
             <img src="img/1.jpg" alt="服务器登录信息确认">
@@ -138,7 +163,7 @@
 
         <h2 id="install">2. 执行安装命令</h2>
         <div class="warning-block">
-            <p><strong>注意：</strong> 若选择使用 Nginx，请确保您的域名已解析至当前服务器 IP。NAT 服务器用户请务必选择脚本中的第 4 种 SSL 获取方式。</p>
+            <p><strong>注意：</strong> 若选择自动申请证书，请确保您的域名已解析至当前服务器 IP。NAT 服务器用户若无法把公网 80 端口映射到本机，请在证书方式中选择 DNS-01 模式。</p>
         </div>
 
         <p>在 SSH 终端（推荐使用 Xshell 或 FinalShell）中复制并运行以下任一命令：</p>
@@ -147,17 +172,48 @@ wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.s
 
         <figure class="step-figure">
             <img src="img/4.jpg" alt="终端执行脚本">
-            <figcaption class="step-caption">图 2：在终端粘贴命令并回车，进入交互式安装界面</figcaption>
+            <figcaption class="step-caption">图 2：在终端粘贴命令并回车，脚本会自动检测系统、安装依赖并进入管理菜单</figcaption>
         </figure>
 
-        <p>在管理界面输入数字 <code>1</code> 开始安装。脚本会询问您的<strong>域名、映射端口</strong>。请根据提示完成录入：</p>
+        <p>脚本会打印如下管理菜单，首次安装请输入数字 <code>1</code>：</p>
+        <pre><code>=====================================
+ Gemini API 反代管理脚本 by cnfte v2.2.0
+=====================================
+1) 安装/配置反代（含SSL）
+2) 重启反代
+3) 停止Nginx
+4) 卸载Nginx
+5) 完全清理（Nginx/配置/缓存）
+6) 备份配置
+7) 恢复配置
+8) 检查服务状态（含证书到期提醒）
+9) 资源与代理监控
+10) 查看日志
+11) 访问控制管理（Basic Auth / IP白名单）
+12) 手动续期证书
+0) 退出</code></pre>
+
+        <p>随后脚本会依次询问<strong>域名、绑定IP、HTTP/HTTPS 端口</strong>，请根据提示完成录入：</p>
 
         <figure class="step-figure">
             <img src="img/5.jpg" alt="安装参数配置">
-            <figcaption class="step-caption">图 3：按提示配置域名及 SSL 证书申请方式</figcaption>
+            <figcaption class="step-caption">图 3：按提示配置域名、端口及证书获取方式</figcaption>
         </figure>
 
-        <h2 id="use">3. 客户端配置</h2>
+        <h2 id="ssl">3. 证书获取方式</h2>
+        <p>安装过程中需要在以下 4 种方式中选择一种用于签发或指定 SSL 证书：</p>
+        <table>
+            <tr><th>选项</th><th>方式</th><th>说明</th></tr>
+            <tr><td>1</td><td>webroot</td><td>自动申请，零停机，要求公网 80 端口可正常访问</td></tr>
+            <tr><td>2</td><td>standalone</td><td>自动申请，会临时停止 Nginx 释放所选 HTTP 端口用于验证；若该端口非 80，需确保路由器/NAT 已把公网 80 转发到本机对应端口，否则请改用 DNS-01</td></tr>
+            <tr><td>3</td><td>DNS-01</td><td>自动申请，适合泛域名或 NAT 无 80 端口映射的场景；需提前导出对应 DNS 服务商的 API 环境变量（如 Cloudflare 的 <code>CF_Token</code>），并输入 DNS API 标识（如 <code>dns_cf</code>）</td></tr>
+            <tr><td>4</td><td>手动指定</td><td>直接提供已有证书（<code>.crt</code>/<code>.pem</code>）与私钥（<code>.key</code>）路径</td></tr>
+        </table>
+        <div class="warning-block">
+            <p>证书剩余有效期不足 14 天时，"检查服务状态"（菜单 8）会高亮提醒，可通过菜单 <code>12</code> 手动续期。</p>
+        </div>
+
+        <h2 id="use">4. 客户端配置</h2>
         <p>安装成功后，您可以在 <strong>Chatbox</strong> 等 AI 客户端中直接填入您的代理域名进行通信。</p>
 
         <figure class="step-figure">
@@ -166,8 +222,50 @@ wget https://raw.githubusercontent.com/Cnfte/geminiproxy/refs/heads/main/proxy.s
         </figure>
 
         <div class="warning-block">
-            <p><strong>关于 API Key：</strong> 本脚本不提供 Key，您需要前往 <a href="https://ai.google.dev/" target="_blank">Google AI Studio</a> 自行获取。</p>
+            <p><strong>关于 API Key：</strong> 本脚本不提供 Key，您需要前往 <a href="https://ai.google.dev/" target="_blank">Google AI Studio</a> 自行获取。脚本仅代理 Gemini 官方 API，不做 OpenAI 格式转换。</p>
         </div>
+
+        <h2 id="menu">5. 管理菜单一览</h2>
+        <p>安装完成后，重新运行脚本会进入同一菜单，可随时执行以下管理操作：</p>
+        <table>
+            <tr><th>菜单项</th><th>功能说明</th></tr>
+            <tr><td>2 重启反代</td><td>重启 Nginx 服务</td></tr>
+            <tr><td>3 停止Nginx</td><td>停止 Nginx 服务</td></tr>
+            <tr><td>4 卸载Nginx</td><td>通过系统包管理器卸载 Nginx 并移除站点配置文件</td></tr>
+            <tr><td>5 完全清理</td><td>卸载 Nginx，并删除相关配置、日志、缓存目录与备份目录</td></tr>
+            <tr><td>6 备份配置</td><td>将 Nginx 站点配置、脚本配置、ACME 校验配置及 Basic Auth 密码文件打包备份</td></tr>
+            <tr><td>7 恢复配置</td><td>从指定备份包恢复以上文件（恢复前会校验包内文件路径，防止异常写入）</td></tr>
+            <tr><td>8 检查服务状态</td><td>显示 Nginx 运行状态、配置语法、当前域名/端口/证书配置，以及证书到期天数提醒</td></tr>
+            <tr><td>9 资源与代理监控</td><td>每 5 秒刷新 CPU、内存、磁盘占用、当前连接数及代理接口 HTTP 状态码</td></tr>
+            <tr><td>10 查看日志</td><td>查看 Nginx 访问日志、错误日志、脚本日志，或三者聚合查看（需安装 multitail）</td></tr>
+            <tr><td>11 访问控制管理</td><td>启用/关闭 Basic Auth 密码保护，设置或清除 IP 白名单</td></tr>
+            <tr><td>12 手动续期证书</td><td>通过 acme.sh 手动触发证书续期并重启 Nginx</td></tr>
+        </table>
+
+        <h2 id="access">6. 访问控制</h2>
+        <p>在菜单 <code>11</code> 中可以为反代接口增加两类访问限制，二者可同时启用：</p>
+        <ul>
+            <li><strong>Basic Auth 密码保护</strong>：设置用户名和密码后，访问代理域名时需要输入凭证。</li>
+            <li><strong>IP 白名单</strong>：填入允许访问的 IP / CIDR（多个用空格分隔），仅白名单内的地址可访问，其余一律拒绝。</li>
+        </ul>
+        <div class="warning-block">
+            <p>启用 IP 白名单前请确认自己当前的出口 IP 已在名单内，避免把自己锁在服务之外。</p>
+        </div>
+
+        <h2 id="monitor">7. 监控与日志</h2>
+        <p>菜单 <code>9</code> 资源与代理监控会每 5 秒刷新一次 CPU、内存、磁盘占用、当前 HTTPS 连接数，以及对 <code>/v1/models</code> 接口发起探测得到的 HTTP 状态码，便于快速判断代理是否可用。</p>
+        <p>菜单 <code>10</code> 查看日志可选择：Nginx 访问日志、Nginx 错误日志、脚本运行日志，或在安装了 <code>multitail</code> 的情况下三者聚合实时查看。</p>
+
+        <h2 id="paths">8. 配置与日志路径</h2>
+        <table>
+            <tr><th>用途</th><th>路径</th></tr>
+            <tr><td>脚本配置文件</td><td><code>/etc/gemini_proxy.conf</code></td></tr>
+            <tr><td>Nginx 站点配置</td><td><code>/etc/nginx/conf.d/chat.conf</code></td></tr>
+            <tr><td>脚本运行日志</td><td><code>/var/log/gemini_proxy.log</code></td></tr>
+            <tr><td>Nginx 访问日志</td><td><code>/var/log/nginx/gemini_access.log</code></td></tr>
+            <tr><td>Nginx 错误日志</td><td><code>/var/log/nginx/gemini_error.log</code></td></tr>
+            <tr><td>配置备份目录</td><td><code>/var/backups/gemini_proxy</code></td></tr>
+        </table>
 
         <p>配置完成后，即可享受无缝的 Gemini 交互体验！</p>
     </main>
